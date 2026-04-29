@@ -40,6 +40,8 @@ export default function App() {
   const [loadingMode, setLoadingMode] = useState<LoadingMode>(null);
   const [loadingStep, setLoadingStep] = useState(0);
   const reportRef = useRef<HTMLDivElement>(null);
+  const analyzeRunRef = useRef(0);
+  const recommendRunRef = useRef(0);
   const isLoading = isAnalyzing || isRecommending;
 
   const responseCount = useMemo(
@@ -61,11 +63,14 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isLoading, loadingMode]);
 
-  async function handleAnalyze() {
-    if (responseCount < 2) {
+  async function runAnalyze(nextFeedback: string) {
+    const nextCount = nextFeedback.split("\n").map((l) => l.trim()).filter(Boolean).length;
+    if (nextCount < 2) {
       toast.error("Paste at least a few feedback responses to analyse.");
       return;
     }
+    const runId = ++analyzeRunRef.current;
+    recommendRunRef.current += 1;
     setIsAnalyzing(true);
     setLoadingMode("analyze");
     setErrorText(null);
@@ -73,33 +78,44 @@ export default function App() {
     setClusters([]);
 
     try {
-      const data = await analyzeFeedback(feedback, source);
+      const data = await analyzeFeedback(nextFeedback, source);
+      if (runId !== analyzeRunRef.current) return;
       setClusters(data.clusters);
       toast.success(`Analyzed ${data.clusters.length} clusters`);
     } catch (e) {
+      if (runId !== analyzeRunRef.current) return;
       const message = e instanceof Error ? e.message : "Analysis failed. Please retry.";
       setErrorText(message);
       toast.error(message);
     } finally {
+      if (runId !== analyzeRunRef.current) return;
       setIsAnalyzing(false);
       setLoadingMode(null);
     }
   }
 
+  async function handleAnalyze() {
+    await runAnalyze(feedback);
+  }
+
   async function handleRecommend() {
     if (clusters.length === 0) return;
+    const runId = ++recommendRunRef.current;
     setIsRecommending(true);
     setLoadingMode("recommend");
     setErrorText(null);
     try {
       const data = await generateRecommendations(clusters, source);
+      if (runId !== recommendRunRef.current) return;
       setSprint(data);
       toast.success("Recommendations generated");
     } catch (e) {
+      if (runId !== recommendRunRef.current) return;
       const message = e instanceof Error ? e.message : "Recommendation generation failed. Please retry.";
       setErrorText(message);
       toast.error(message);
     } finally {
+      if (runId !== recommendRunRef.current) return;
       setIsRecommending(false);
       setLoadingMode(null);
     }
@@ -127,10 +143,22 @@ export default function App() {
   }
 
   function reset() {
+    analyzeRunRef.current += 1;
+    recommendRunRef.current += 1;
+    setIsAnalyzing(false);
+    setIsRecommending(false);
+    setLoadingMode(null);
+    setLoadingStep(0);
     setClusters([]);
     setSprint(null);
     setErrorText(null);
     setFeedback("");
+    setSource("Mixed");
+  }
+
+  function handleUseSample() {
+    setFeedback(SAMPLE);
+    void runAnalyze(SAMPLE);
   }
 
   if (isLoading) {
@@ -357,7 +385,8 @@ export default function App() {
               </span>
               {feedback.length === 0 && (
                 <button
-                  onClick={() => setFeedback(SAMPLE)}
+                  onClick={handleUseSample}
+                  disabled={isLoading}
                   style={{ background: "none", border: "none", color: "var(--teal)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-sans)", fontWeight: 500, padding: 0, textDecoration: "underline", textUnderlineOffset: 3 }}
                 >
                   Try sample data

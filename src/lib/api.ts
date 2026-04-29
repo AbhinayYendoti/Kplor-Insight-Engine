@@ -66,6 +66,7 @@ export async function analyzeFeedback(
   const feedbackItems = normalizeFeedback(feedback);
   const res = await fetch(`${BASE}/analyze`, {
     method: "POST",
+    cache: "no-store",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ feedback: feedbackItems, source }),
   });
@@ -83,6 +84,7 @@ export async function generateRecommendations(
 ): Promise<SprintResult> {
   const res = await fetch(`${BASE}/recommend`, {
     method: "POST",
+    cache: "no-store",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clusters, source }),
   });
