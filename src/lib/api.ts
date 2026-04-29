@@ -64,10 +64,15 @@ export async function analyzeFeedback(
   source: string
 ): Promise<ClustersResult> {
   const feedbackItems = normalizeFeedback(feedback);
-  const res = await fetch(`${BASE}/analyze`, {
+  const nonce = Date.now().toString();
+  const res = await fetch(`${BASE}/analyze?_=${nonce}`, {
     method: "POST",
     cache: "no-store",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store, no-cache, max-age=0",
+      Pragma: "no-cache",
+    },
     body: JSON.stringify({ feedback: feedbackItems, source }),
   });
 
@@ -82,10 +87,15 @@ export async function generateRecommendations(
   clusters: Cluster[],
   source: string
 ): Promise<SprintResult> {
-  const res = await fetch(`${BASE}/recommend`, {
+  const nonce = Date.now().toString();
+  const res = await fetch(`${BASE}/recommend?_=${nonce}`, {
     method: "POST",
     cache: "no-store",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store, no-cache, max-age=0",
+      Pragma: "no-cache",
+    },
     body: JSON.stringify({ clusters, source }),
   });
 

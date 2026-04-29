@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import time
+import hashlib
 from typing import List
 
 from fastapi import APIRouter, HTTPException
@@ -12,10 +14,25 @@ logger = logging.getLogger("kplor-api")
 router = APIRouter(prefix="/api", tags=["analysis"])
 
 CLUSTER_PROMPT = (
-    "You are analyzing startup user feedback. Cluster into 5 themes. "
-    "Return ONLY valid JSON with this exact shape: "
-    "{\"clusters\":[{\"name\":\"string\",\"frequency\":1,\"severity\":1,\"implication\":\"string\"}]}. "
-    "No markdown, no commentary."
+    "You are a product manager analyzing feedback for an AI edtech startup.\n\n"
+    "Group feedback into 4-6 PRODUCT PAIN POINT CLUSTERS.\n\n"
+    "STRICT RULES:\n"
+    "- Never use generic names like Theme 1, Theme 2, Category A.\n"
+    "- Cluster names must be specific product problems.\n\n"
+    "Good labels:\n"
+    "Video Generation Latency\n"
+    "Admin Workflow Friction\n"
+    "Pricing Transparency Issues\n"
+    "Content Personalization Gaps\n"
+    "Platform Reliability Bugs\n\n"
+    "Bad labels:\n"
+    "Theme 1\n"
+    "Theme 2\n"
+    "General Issues\n\n"
+    "Multiple feedback responses may belong in the same cluster.\n"
+    "Cluster by shared problem, not one response per cluster.\n\n"
+    "Return valid JSON only:\n"
+    "{\"clusters\":[{\"name\":\"\",\"frequency\":0,\"severity\":1}]}"
 )
 
 RECOMMEND_PROMPT = (
@@ -25,10 +42,104 @@ RECOMMEND_PROMPT = (
     "Return ONLY JSON."
 )
 
+CACHE_TTL_SECONDS = 300
+_analyze_cache = {}
+_GENERIC_LABEL_PREFIXES = ("theme", "category")
+_GENERIC_LABELS = {"general issues", "miscellaneous", "other", "others"}
+
 
 def _normalize_feedback(raw_feedback: List[str]) -> List[str]:
     cleaned = [item.strip()[:300] for item in raw_feedback if item and item.strip()]
     return cleaned[:20]
+
+
+def _cluster_implication(name: str) -> str:
+    lname = name.lower()
+    if "latency" in lname or "slow" in lname or "speed" in lname:
+        return "Users are blocked by slow generation, reducing completion and retention."
+    if "reliability" in lname or "crash" in lname or "bug" in lname or "fail" in lname:
+        return "Stability gaps are breaking trust and causing drop-off."
+    if "pricing" in lname or "cost" in lname:
+        return "Unclear pricing creates buying friction and slows conversions."
+    if "admin" in lname or "workflow" in lname or "onboarding" in lname:
+        return "Operational friction slows adoption for admins and teams."
+    if "mobile" in lname or "ios" in lname or "android" in lname:
+        return "Mobile usability gaps reduce access and engagement."
+    if "integration" in lname or "lms" in lname:
+        return "Missing integrations block rollout in target organizations."
+    return "This pain point materially impacts user experience and product adoption."
+
+
+def _analyze_cache_key(source: str, feedback_items: List[str]) -> str:
+    raw = f"{source}::{json.dumps(feedback_items, ensure_ascii=False)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_semantic_label(name: str) -> bool:
+    normalized = name.strip().lower()
+    if not normalized:
+        return False
+    if any(normalized.startswith(prefix) for prefix in _GENERIC_LABEL_PREFIXES):
+        return False
+    if normalized in _GENERIC_LABELS:
+        return False
+    if len(normalized.split()) < 2:
+        return False
+    return True
+
+
+def _is_valid_cluster_result(clusters: List[dict], feedback_items: List[str]) -> bool:
+    if not (4 <= len(clusters) <= 6):
+        return False
+    if not all(_is_semantic_label(c.get("name", "")) for c in clusters):
+        return False
+    if any(int(c.get("frequency", 0)) < 1 for c in clusters):
+        return False
+    if any(int(c.get("severity", 0)) < 1 or int(c.get("severity", 0)) > 5 for c in clusters):
+        return False
+    if len(feedback_items) >= 4 and all(int(c.get("frequency", 1)) == 1 for c in clusters):
+        return False
+    return True
+
+
+def _heuristic_clusters(feedback_items: List[str]) -> List[dict]:
+    buckets = {
+        "Video Generation Latency": {"frequency": 0, "severity": 4},
+        "Platform Reliability Bugs": {"frequency": 0, "severity": 5},
+        "Admin Workflow Friction": {"frequency": 0, "severity": 3},
+        "Pricing Transparency Issues": {"frequency": 0, "severity": 3},
+        "Content Personalization Gaps": {"frequency": 0, "severity": 3},
+        "Mobile Experience Issues": {"frequency": 0, "severity": 3},
+    }
+    for text in feedback_items:
+        t = text.lower()
+        if ("slow" in t or "latency" in t or "takes too long" in t) and ("video" in t or "generation" in t):
+            buckets["Video Generation Latency"]["frequency"] += 1
+        elif "crash" in t or "bug" in t or "failed" in t or "error" in t or "reliab" in t:
+            buckets["Platform Reliability Bugs"]["frequency"] += 1
+        elif "pricing" in t or "quote" in t or "cost" in t:
+            buckets["Pricing Transparency Issues"]["frequency"] += 1
+        elif "admin" in t or "workflow" in t or "onboarding" in t or "cohort" in t:
+            buckets["Admin Workflow Friction"]["frequency"] += 1
+        elif "personal" in t or "factual" in t or "quality" in t or "voice" in t:
+            buckets["Content Personalization Gaps"]["frequency"] += 1
+        elif "mobile" in t or "ios" in t or "android" in t:
+            buckets["Mobile Experience Issues"]["frequency"] += 1
+        else:
+            buckets["Admin Workflow Friction"]["frequency"] += 1
+
+    clusters = []
+    for name, payload in buckets.items():
+        if payload["frequency"] > 0:
+            clusters.append(
+                {
+                    "name": name,
+                    "frequency": payload["frequency"],
+                    "severity": payload["severity"],
+                    "implication": _cluster_implication(name),
+                }
+            )
+    return clusters[:6]
 
 
 def _coerce_clusters(result: dict, feedback_items: List[str]) -> List[dict]:
@@ -48,10 +159,10 @@ def _coerce_clusters(result: dict, feedback_items: List[str]) -> List[dict]:
 
     normalized: List[dict] = []
     if isinstance(candidates, list):
-        for idx, item in enumerate(candidates[:5], start=1):
+        for idx, item in enumerate(candidates[:6], start=1):
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("name") or item.get("theme") or f"Theme {idx}").strip()
+            name = str(item.get("name") or item.get("theme") or f"Cluster {idx}").strip()
             frequency_raw = item.get("frequency", 1)
             severity_raw = item.get("severity", 3)
             try:
@@ -62,34 +173,19 @@ def _coerce_clusters(result: dict, feedback_items: List[str]) -> List[dict]:
                 severity = max(1, min(5, int(severity_raw)))
             except Exception:
                 severity = 3
-            implication = str(
-                item.get("implication")
-                or item.get("product_implication")
-                or item.get("why")
-                or "This theme impacts user experience and should be addressed."
-            ).strip()
             normalized.append(
                 {
                     "name": name,
                     "frequency": frequency,
                     "severity": severity,
-                    "implication": implication,
+                    "implication": _cluster_implication(name),
                 }
             )
 
     if normalized:
         return normalized
 
-    # Final fallback to keep API stable even when model output is malformed.
-    return [
-        {
-            "name": f"Theme {idx}",
-            "frequency": 1,
-            "severity": 3,
-            "implication": f"User feedback indicates this issue: {text[:120]}",
-        }
-        for idx, text in enumerate(feedback_items[:5], start=1)
-    ]
+    return _heuristic_clusters(feedback_items)
 
 
 def _coerce_recommendation(result: dict, req: RecommendRequest) -> dict:
@@ -192,15 +288,29 @@ async def analyze(req: AnalyzeRequest):
             detail={"error": "ValidationError", "details": "Provide at least 2 feedback items"},
         )
 
-    user_prompt = f"Source={req.source}\nFeedback:\n" + "\n".join(f"- {item}" for item in feedback_items)
-    result = await call_llm_json(CLUSTER_PROMPT, user_prompt)
+    cache_key = _analyze_cache_key(req.source, feedback_items)
+    cached = _analyze_cache.get(cache_key)
+    now = time.time()
+    if cached and cached["expires_at"] > now:
+        logger.info("Analyze cache hit")
+        return {"clusters": cached["clusters"]}
 
-    clusters = _coerce_clusters(result, feedback_items)
-    if not clusters:
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "ModelOutputError", "details": "Model did not return usable clusters"},
-        )
+    user_prompt = f"Source={req.source}\nFeedback:\n" + "\n".join(f"- {item}" for item in feedback_items)
+    clusters: List[dict] = []
+    for attempt in range(1, 4):
+        result = await call_llm_json(CLUSTER_PROMPT, user_prompt)
+        clusters = _coerce_clusters(result, feedback_items)
+        if _is_valid_cluster_result(clusters, feedback_items):
+            _analyze_cache[cache_key] = {
+                "clusters": clusters,
+                "expires_at": time.time() + CACHE_TTL_SECONDS,
+            }
+            break
+        logger.warning("Rejected cluster output on attempt %s: %s", attempt, json.dumps(result)[:300])
+        if attempt < 3:
+            await asyncio.sleep(2 ** (attempt - 1))
+            continue
+        clusters = _heuristic_clusters(feedback_items)
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     logger.info("POST /api/analyze completed in %sms", latency_ms)

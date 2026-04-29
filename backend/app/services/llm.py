@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -18,12 +17,6 @@ TEMPERATURE = 0.2
 MAX_TOKENS = 300
 
 logger = logging.getLogger("kplor-api")
-_response_cache: Dict[str, Dict[str, Any]] = {}
-
-
-def _cache_key(system_prompt: str, user_prompt: str) -> str:
-    raw = f"{MODEL}::{system_prompt}::{user_prompt}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _safe_parse_json(raw_text: str) -> Dict[str, Any]:
@@ -52,10 +45,6 @@ async def call_llm_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
             detail={"error": "ConfigurationError", "details": "NVIDIA_API_KEY is not set"},
         )
 
-    key = _cache_key(system_prompt, user_prompt)
-    if key in _response_cache:
-        return _response_cache[key]
-
     payload = {
         "model": MODEL,
         "messages": [
@@ -83,7 +72,6 @@ async def call_llm_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
                 data = resp.json()
                 raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 parsed = _safe_parse_json(raw)
-                _response_cache[key] = parsed
                 return parsed
         except httpx.TimeoutException:
             last_error = "NVIDIA request timed out"

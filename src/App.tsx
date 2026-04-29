@@ -10,21 +10,21 @@ import {
 } from "@/lib/api";
 import { exportNodeToPdf } from "@/lib/exportPdf";
 
-const SAMPLE = `The video generation takes way too long, sometimes 5-6 minutes for a short clip.
-Our learners told us the explainer videos felt slow and the voice was robotic.
-The platform UX is confusing — admins can't figure out how to assign content to cohorts.
-Pricing tier for L&D teams is unclear, we need a quote to even consider it.
-Video quality is great when it works but it crashed twice during a pilot demo.
-Students said the videos helped them grasp concepts faster than reading the textbook.
-The dashboard for tracking learner progress is missing key metrics like completion rates.
-Couldn't find a way to bulk upload course materials, had to do one at a time.
-The voiceover sounds unnatural — please add more voice options or a real human option.
-Generation failed silently three times today, no error message, just nothing happened.
-We need an integration with our LMS (Moodle) — without it we can't roll this out.
-Some videos had factual errors in the generated script, learners noticed.
-Mobile experience is broken on iOS Safari — video player doesn't load.
-Love the product overall, just needs to be 3x faster and more reliable.
-Admin onboarding took too long, no clear documentation on getting set up.`;
+const SAMPLE = `Creating a 3-minute explainer still takes 4+ minutes during peak hours.
+Our instructors keep reporting random export failures with no actionable error message.
+The admin dashboard is hard to navigate when managing multiple cohorts at once.
+Pricing is confusing for enterprise buyers; they cannot estimate monthly cost quickly.
+Generated narration sounds robotic for technical topics and reduces learner engagement.
+We need SCORM and LMS sync before the corporate rollout can start.
+Mobile playback stutters on Android mid-range devices.
+Bulk upload for lesson scripts is missing, so onboarding content is painfully slow.
+A few generated scripts had factual inaccuracies in compliance training modules.
+Team leads asked for better analytics: completion rate, drop-off points, and replay rate.
+The course assignment flow has too many steps for non-technical admins.
+Video rendering occasionally stalls at 90% and never completes.
+Localization support is weak; Hindi subtitles are inaccurate.
+Overall value is strong, but reliability and speed issues block wider adoption.
+Onboarding docs are outdated and do not match the current UI.`; 
 
 type SourceType = "Mixed" | "Learner" | "College Admin" | "L&D Team";
 type LoadingMode = "analyze" | "recommend" | null;
@@ -63,8 +63,15 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isLoading, loadingMode]);
 
+  function clearAnalysisState() {
+    setClusters([]);
+    setSprint(null);
+    setErrorText(null);
+  }
+
   async function runAnalyze(nextFeedback: string) {
-    const nextCount = nextFeedback.split("\n").map((l) => l.trim()).filter(Boolean).length;
+    const feedbackToAnalyze = nextFeedback;
+    const nextCount = feedbackToAnalyze.split("\n").map((l) => l.trim()).filter(Boolean).length;
     if (nextCount < 2) {
       toast.error("Paste at least a few feedback responses to analyse.");
       return;
@@ -73,12 +80,10 @@ export default function App() {
     recommendRunRef.current += 1;
     setIsAnalyzing(true);
     setLoadingMode("analyze");
-    setErrorText(null);
-    setSprint(null);
-    setClusters([]);
+    clearAnalysisState();
 
     try {
-      const data = await analyzeFeedback(nextFeedback, source);
+      const data = await analyzeFeedback(feedbackToAnalyze, source);
       if (runId !== analyzeRunRef.current) return;
       setClusters(data.clusters);
       toast.success(`Analyzed ${data.clusters.length} clusters`);
@@ -127,7 +132,15 @@ export default function App() {
     const text = await file.text();
     const lines = text.split("\n");
     if (lines[0]?.toLowerCase().includes("feedback")) lines.shift(); // strip CSV header
-    setFeedback(lines.map((l) => l.replace(/^"|"$/g, "").trim()).filter(Boolean).join("\n"));
+    const nextFeedback = lines.map((l) => l.replace(/^"|"$/g, "").trim()).filter(Boolean).join("\n");
+    analyzeRunRef.current += 1;
+    recommendRunRef.current += 1;
+    setIsAnalyzing(false);
+    setIsRecommending(false);
+    setLoadingMode(null);
+    setLoadingStep(0);
+    clearAnalysisState();
+    setFeedback(nextFeedback);
     toast.success(`Loaded ${file.name}`);
   }
 
@@ -149,16 +162,20 @@ export default function App() {
     setIsRecommending(false);
     setLoadingMode(null);
     setLoadingStep(0);
-    setClusters([]);
-    setSprint(null);
-    setErrorText(null);
+    clearAnalysisState();
     setFeedback("");
     setSource("Mixed");
   }
 
   function handleUseSample() {
+    analyzeRunRef.current += 1;
+    recommendRunRef.current += 1;
+    setIsAnalyzing(false);
+    setIsRecommending(false);
+    setLoadingMode(null);
+    setLoadingStep(0);
+    clearAnalysisState();
     setFeedback(SAMPLE);
-    void runAnalyze(SAMPLE);
   }
 
   if (isLoading) {
@@ -385,6 +402,7 @@ export default function App() {
               </span>
               {feedback.length === 0 && (
                 <button
+                  type="button"
                   onClick={handleUseSample}
                   disabled={isLoading}
                   style={{ background: "none", border: "none", color: "var(--teal)", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-sans)", fontWeight: 500, padding: 0, textDecoration: "underline", textUnderlineOffset: 3 }}
